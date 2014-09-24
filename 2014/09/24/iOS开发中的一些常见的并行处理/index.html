@@ -1,0 +1,353 @@
+
+ <!DOCTYPE HTML>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  
+    <title>iOS开发中的一些常见的并行处理 | Ricky</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=3, minimum-scale=1">
+    
+    <meta name="author" content="Ricky Lee">
+    
+    <meta name="description" content="本文主要探讨一些常用多任务的最佳实践。包括Core Data的多线程访问，UI的并行绘制，异步网络请求以及一些在运行态内存吃紧的情况下处理大文件的方案等。其实编写异步处理的程序有很多坑！所以，本文所涉及的样例都尽量采用简洁直观的处理方式。因为越是简单的逻辑结构，越能彰显代码的脉络清晰，越易于理解。打">
+    
+    
+    
+    
+    
+    <link rel="icon" href="/img/favicon.ico">
+    
+    
+    <link rel="apple-touch-icon" href="/img/pacman.jpg">
+    <link rel="apple-touch-icon-precomposed" href="/img/pacman.jpg">
+    
+    <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+</head>
+
+  <body>
+    <header>
+      <div>
+		
+			<div id="imglogo">
+				<a href="/"><img src="/img/logo.svg" alt="Ricky" title="Ricky"/></a>
+			</div>
+			
+			<div id="textlogo">
+				<h1 class="site-name"><a href="/" title="Ricky">Ricky</a></h1>
+				<h2 class="blog-motto">做些记录</h2>
+			</div>
+			<div class="navbar"><a class="navbutton navmobile" href="#" title="菜单">
+			</a></div>
+			<nav class="animated">
+				<ul>
+					<ul>
+					 
+						<li><a href="/">Home</a></li>
+					
+						<li><a href="/archives">Archives</a></li>
+					
+					<li>
+					
+					<form class="search" action="//baidu.com/s" method="get" accept-charset="utf-8">
+						<label>Search</label>
+						<input type="text" id="search" name="wd" autocomplete="off" maxlength="20" placeholder="搜索" />
+                        <input name=tn type=hidden value="bds">
+                        <input name=cl type=hidden value="3">
+                        <input name=ct type=hidden value="2097152">
+						<input type="hidden" name="si" value="yoursite.com">
+					</form>
+					
+					</li>
+				</ul>
+			</nav>			
+</div>
+
+    </header>
+    <div id="container">
+      <div id="main" class="post" itemscope itemprop="blogPost">
+	<article itemprop="articleBody"> 
+		<header class="article-info clearfix">
+  <h1 itemprop="name">
+    
+      <a href="/2014/09/24/iOS开发中的一些常见的并行处理/" title="iOS开发中的一些常见的并行处理" itemprop="url">iOS开发中的一些常见的并行处理</a>
+  </h1>
+  <p class="article-author">By
+    
+      <a href="http://yoursite.com" title="Ricky Lee">Ricky Lee</a>
+    </p>
+  <p class="article-time">
+    <time datetime="2014-09-24T07:56:45.000Z" itemprop="datePublished">9月 24 2014</time>
+    更新日期:<time datetime="2014-09-24T08:06:10.000Z" itemprop="dateModified">9月 24 2014</time>
+    
+  </p>
+</header>
+
+	<div class="article-content">
+		
+		
+		<div id="toc" class="toc-article">
+			<strong class="toc-title">文章目录</strong>
+		<ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#Operation_Queues_vs-_Grand_Central_Dispatch"><span class="toc-number">1.</span> <span class="toc-text">Operation Queues vs. Grand Central Dispatch</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Core_Data_in_the_Background"><span class="toc-number">2.</span> <span class="toc-text">Core Data in the Background</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#Updating_the_Main_Context"><span class="toc-number">2.1.</span> <span class="toc-text">Updating the Main Context</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#其他考量"><span class="toc-number">2.2.</span> <span class="toc-text">其他考量</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#延伸阅读："><span class="toc-number">2.3.</span> <span class="toc-text">延伸阅读：</span></a></li></ol></li></ol>
+		</div>
+		
+		<p>本文主要探讨一些常用多任务的最佳实践。包括Core Data的多线程访问，UI的并行绘制，异步网络请求以及一些在运行态内存吃紧的情况下处理大文件的方案等。其实编写异步处理的程序有很多坑！所以，本文所涉及的样例都尽量采用简洁直观的处理方式。因为越是简单的逻辑结构，越能彰显代码的脉络清晰，越易于理解。打个比方，如果在程序中使用多层次的嵌套回调，基本上这个它会有很大的重构空间。</p>
+<h2 id="Operation_Queues_vs-_Grand_Central_Dispatch">Operation Queues vs. Grand Central Dispatch</h2>
+<p>目前，在iOS和OS X 中，SDK主要提供了两类多任务处理的API：<a href="http://developer.apple.com/library/ios/#documentation/Cocoa/Reference/NSOperationQueue_class/Reference/Reference.html" target="_blank" rel="external">operation queues</a>和<a href="https://developer.apple.com/library/ios/#documentation/Performance/Reference/GCD_libdispatch_Ref/Reference/reference.html" target="_blank" rel="external">Grand Central Dispatch（GCD）</a>。其中GCD是基于C的更加底层的API，而operation queues被普遍认为是基于GCD而封装的面向对象（objective-c）的多任务处理API。关于并发处理API层面的比较，有很多<a href="http://www.objc.io/issue-2/concurrency-apis-and-pitfalls.html" target="_blank" rel="external">相关的文章</a>，如果感兴趣可以自行阅读。</p>
+<p>相比于GCD，operation queues的优点是：提供了一些非常好用的便捷处理。其中最重要的一个就是可以取消在任务处理队列中的任务（稍后举例）。另外operation queues在处理任务之间的依赖关系方面也更加容易。而GCD的特长是：可以访问和操作那些operation queues所不能使用的低层函数。详情参考低层并发处理API<a href="http://www.objc.io/issue-2/low-level-concurrency-apis.html" target="_blank" rel="external">相关文章</a>。</p>
+<p><em>延伸阅读</em></p>
+<ul>
+<li><a href="http://stackoverflow.com/questions/10373331/nsoperation-vs-grand-central-dispatch" target="_blank" rel="external">StackOverflow: NSOperation vs. Grand Central Dispatch</a></li>
+<li><a href="http://stackoverflow.com/questions/10373331/nsoperation-vs-grand-central-dispatch" target="_blank" rel="external">Blog: When to use NSOperation vs. GCD</a></li>
+</ul>
+<h2 id="Core_Data_in_the_Background">Core Data in the Background</h2>
+<p>在着手Core Data的多线程处理之前，我们建议先通读一下苹果的官方文档<a href="https://developer.apple.com/library/mac/#documentation/cocoa/conceptual/CoreData/Articles/cdConcurrency.html" target="_blank" rel="external">”Concurrency with Core Data guide”</a>。这个文档中罗列了诸多规则，比如：不要在不同线程间直接传递managed objects。注意这意味着线程间不但不能对不属于自己的managed object做修改操作，甚至连读其中的属性都不可以。正确做法是通过传object ID和从其他线程的context信息中获取object的方式来达到传递object的效果。其实只要遵循文档中的各种指导规则，那么处理 Core Data的并行编程问题就容易多了。</p>
+<p>Xcode提供了一种创建Core Data的模版，工作原理是通过主线程作为persistent store coordinator（持久化协调者）来操作managed object context，进而实现对象的持久化。虽然这种方式很便捷并基本适用常规场景，但如果要操作的数据比较庞大，那就非常有必要将Core Data的操作分配到其他线程中去（注：大数据量的操作可能会阻塞主线程，长时间阻塞主线程用户体验很差并且有可能导致应用程序假死或崩溃）。</p>
+<p><em><a href="https://github.com/objcio/issue-2-background-core-data" target="_blank" rel="external">样例</a>：向Core Data中导入大量的数据：</em></p>
+<p><em>1.为引入数据创建一个单独的operation<br>2.创建一个和main object context相同persistent store coordinator的object context<br>3.引入操作的context保存完成后，通知main managed object context去合并数据。</em></p>
+<p>在样例app中，要导入一大组柏林的运输线路数据。在导入的过程中会展示进度条并且用户可以随时取消当前导入操作。等待条下面再用一个table view来展示目前已导入的数据同时边导入边刷新界面。样例采用的数据署名Creative Commons license，可以<a href="http://stg.daten.berlin.de/datensaetze/vbb-fahrplan-2013" target="_blank" rel="external">在此下载</a>。使用公开标准的<a href="https://developers.google.com/transit/gtfs/reference" target="_blank" rel="external">General Transit Feed格式</a>。</p>
+<p>接下来创建NSOperation的子类ImportOperation，通过复写main方法来处理所有的导入工作。再创建一个private queue concurrency类型的独立的managed object context，这个context需要管理自己的queue，在其上的所有操作必须使用performBlock或者performBlockAndWait来触发。这点相当重要，这是保证这些操作能在正确的线程上执行的关键。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">NSManagedObjectContext* context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType]; </div><div class="line">context.persistentStoreCoordinator = self.persistentStoreCoordinator; </div><div class="line">context.undoManager = nil; </div><div class="line">[self.context performBlockAndWait:^ </div><div class="line">{ </div><div class="line">    [self import]; </div><div class="line">}];</div></pre></td></tr></table></figure>
+
+
+
+<p>注：在样例中复用了persistent store coordinator。正常情况下，需要初始化managed object contexts并且指定其类型：如NSPrivateQueueConcurrencyType，NSMainQueueConcurrencyType或者NSConfinementConcurrencyType，其中NSConfinementConcurrencyType不建议使用，因为它是给一些遗留的旧代码使用的。</p>
+<p>导入前，按行迭代运输线路数据文件的内容，给每一个能解析的行数据创建一个managed object：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line">[lines enumerateObjectsUsingBlock:</div><div class="line">  ^(NSString* line, NSUInteger idx, BOOL* shouldStop)</div><div class="line">  {</div><div class="line">      NSArray* components = [line csvComponents];</div><div class="line">      <span class="keyword">if</span>(components.count &lt; <span class="number">5</span>) {</div><div class="line">          NSLog(@<span class="string">"couldn't parse: %@"</span>, components);</div><div class="line">          <span class="keyword">return</span>;</div><div class="line">      }</div><div class="line">      [Stop importCSVComponents:components intoContext:context];</div><div class="line">  }];</div><div class="line">[lines enumerateObjectsUsingBlock:</div><div class="line">  ^(NSString* line, NSUInteger idx, BOOL* shouldStop)</div><div class="line">  {</div><div class="line">      NSArray* components = [line csvComponents];</div><div class="line">      <span class="keyword">if</span>(components.count &lt; <span class="number">5</span>) {</div><div class="line">          NSLog(@<span class="string">"couldn't parse: %@"</span>, components);</div><div class="line">          <span class="keyword">return</span>;</div><div class="line">      }</div><div class="line">      [Stop importCSVComponents:components intoContext:context];</div><div class="line">  }];</div></pre></td></tr></table></figure>
+
+<p>通过view controller中来触发操作：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">ImportOperation* operation = [[ImportOperation alloc] </div><div class="line">     initWithStore:self.store fileName:fileName];</div><div class="line">[self.operationQueue addOperation:operation];</div></pre></td></tr></table></figure>
+
+<p>至此为止，多线程导入数据到Core Data部分已经完成。接下来，是取消导入部分，非常简单只需要在集合的快速枚举block中加个判断即可：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span>(self.isCancelled) {</div><div class="line">    *shouldStop = YES;</div><div class="line">    <span class="keyword">return</span>;</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>最后是增加进度条，在operation中创建一个progressCallback属性block。注意更新进度条必须在主线程中完成，否则会导致UIKit崩溃。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">operation.progressCallback = ^(float progress) </div><div class="line">{</div><div class="line">    [[NSOperationQueue mainQueue] addOperationWithBlock:^</div><div class="line">    {</div><div class="line">        self.progressIndicator.progress = progress;</div><div class="line">    }];</div><div class="line">};</div></pre></td></tr></table></figure>
+
+<p>在快速枚举中加上下面这行去调用进度条更新block：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">self.progressCallback(idx / (float) count);</div></pre></td></tr></table></figure>
+
+<p>然而，如果你执行样例app就会发现一切都特别慢而且取消操作也有迟滞。这是因为main opertation queue中塞满了要更新进度条的block。通过降低更新进度条的频度可以解决这个问题，<br>例如以百分之一的节奏更新进度条：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">NSInteger progressGranularity = lines.count / <span class="number">100</span>;</div><div class="line"> </div><div class="line"><span class="keyword">if</span> (idx % progressGranularity == <span class="number">0</span>) {</div><div class="line">    self.progressCallback(idx / (float) count);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+
+
+<h3 id="Updating_the_Main_Context">Updating the Main Context</h3>
+<p>我们样例app中的table view后面挂接了一个专门在主线程上执行取数据任务的controller。如前面所述，在导入数据的过程中table view会同期展示数据。要达成这个任务，在数据导入的过程中，需要向main context发出广播，要在Store类的init方法中注册Core Data广播监听：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line">[[NSNotificationCenter defaultCenter] </div><div class="line">    addObserverForName:NSManagedObjectContextDidSaveNotification</div><div class="line">                object:nil</div><div class="line">                 queue:nil</div><div class="line">            usingBlock:^(NSNotification* note)</div><div class="line">{</div><div class="line">    NSManagedObjectContext *moc = self.mainManagedObjectContext;</div><div class="line">    <span class="keyword">if</span> (note.object != moc)</div><div class="line">        [moc performBlock:^(){</div><div class="line">            [moc mergeChangesFromContextDidSaveNotification:note];</div><div class="line">        }];</div><div class="line">    }];</div><div class="line">}];</div></pre></td></tr></table></figure>
+
+<p>注：如果block在main queue中作为参数传递，该block就会在main queue中执行。运行样例，此时table view是在导入结束后才会展示导入结果。大概那么几秒钟，用户的操作会被阻塞掉。因此，需要通过批量操作来解决这个问题。因为凡是导入较大的数据，都应该采用逐渐导入的方式，否则内存很快就会被耗光，效率会奇差。同时，渐进式的导入也会分散main thread 更新table view的压力。</p>
+<p>至于说合理的保存的次数基本上就得靠试。存得太频繁，缺点是反复操作I/O。存得次数太少，应用会变得经常无响应。经过多次试验，我们认为本样例中存储250次比较合适。改进后，导入过程变得很平滑，更新了table view，整个过程也没有阻塞main context太久。</p>
+<h3 id="其他考量">其他考量</h3>
+<p>在导入文件的时候，样例代码将整个文件直接读入内存后转成一个String对象接着再对其分行。这种方式非常适合操作那些小文件，但对于大文件应该采用逐行懒加载的方式。<a href="http://stackoverflow.com/questions/3707427/how-to-read-data-from-nsfilehandle-line-by-line/3711079#3711079" target="_blank" rel="external">StackOverflow上Dave DeLong</a> 提供了一段非常好的样例代码来实现逐行读取。本文的最后也会提供一个流方式读入文件的样例。</p>
+<p>注：在app第一次运行时，也可以通过sqlite来替代将大量数据导入Core Data这个过程。sqlite可以放在bundle内，也可以从服务器下载或者动态生成。某些情况下，真机上使用sqlite的存储过程会非常快。</p>
+<p>最后要提一下，最近关于child contexts的争论很多，并不建议在多线程中使用它。如果在非主线程中创建了一个context作为main context的child context，在这些非主线程中执行保存操作还是会<a href="http://floriankugler.com/blog/2013/4/29/concurrent-core-data-stack-performance-shootout" target="_blank" rel="external">阻塞主线程</a>。反过来，要是将main context设置为其他非主线程context的child context，其效果与传统的创建两个有依赖关系的contexts类似，还是需要手动的将其他线程的context变化和main context做合并。</p>
+<p>事实证明，除非有更好的选择，否则设置一个persistent store coordinator和两个独立的contexts才是对Core Data多线程操作的合理方式。</p>
+<h3 id="延伸阅读：">延伸阅读：</h3>
+<p><a href="http://developer.apple.com/library/ios/#documentation/Cocoa/Conceptual/CoreData/Articles/cdImporting.html" target="_blank" rel="external">Core Data Programming Guide: Efficiently importing data</a><br><a href="http://developer.apple.com/library/ios/#documentation/Cocoa/Conceptual/CoreData/Articles/cdConcurrency.html#//apple_ref/doc/uid/TP40003385-SW1j" target="_blank" rel="external">Core Data Programming Guide: Concurrency with Core Data</a><br><a href="http://stackoverflow.com/questions/2138252/core-data-multi-thread-application/2138332#2138332" target="_blank" rel="external">StackOverflow: Rules for working with Core Data</a><br><a href="https://developer.apple.com/videos/wwdc/2012/?id=214" target="_blank" rel="external">WWDC 2012 Video: Core Data Best Practices</a><br><a href="http://pragprog.com/book/mzcd/core-data" target="_blank" rel="external">Book: Core Data by Marcus Zarra</a></p>
+  
+	</div>
+		<footer class="article-footer clearfix">
+
+
+
+
+<div class="article-share" id="share">
+
+  <div data-url="http://yoursite.com/2014/09/24/iOS开发中的一些常见的并行处理/" data-title="iOS开发中的一些常见的并行处理 | Ricky" data-tsina="offcourt" class="share clearfix">
+  </div>
+
+</div>
+</footer>   	       
+	</article>
+	
+<nav class="article-nav clearfix">
+ 
+
+<div class="next">
+<a href="/2014/09/24/unrecognized-selector-sent-to-instance-问题快速定位的方法/"  title="unrecognized selector sent to instance 问题快速定位的方法">
+ <strong>NEXT:</strong><br/> 
+ <span>unrecognized selector sent to instance 问题快速定位的方法
+</span>
+</a>
+</div>
+
+</nav>
+
+	
+</div>  
+      <div class="openaside"><a class="navbutton" href="#" title="显示侧边栏"></a></div>
+
+  <div id="toc" class="toc-aside">
+  <strong class="toc-title">文章目录</strong>
+  <ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#Operation_Queues_vs-_Grand_Central_Dispatch"><span class="toc-number">1.</span> <span class="toc-text">Operation Queues vs. Grand Central Dispatch</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Core_Data_in_the_Background"><span class="toc-number">2.</span> <span class="toc-text">Core Data in the Background</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#Updating_the_Main_Context"><span class="toc-number">2.1.</span> <span class="toc-text">Updating the Main Context</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#其他考量"><span class="toc-number">2.2.</span> <span class="toc-text">其他考量</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#延伸阅读："><span class="toc-number">2.3.</span> <span class="toc-text">延伸阅读：</span></a></li></ol></li></ol>
+  </div>
+
+<div id="asidepart">
+<div class="closeaside"><a class="closebutton" href="#" title="隐藏侧边栏"></a></div>
+<aside class="clearfix">
+
+  
+
+  
+<div class="tagslist">
+	<p class="asidetitle">标签</p>
+		<ul class="clearfix">
+		
+			<li><a href="/tags/debug/" title="debug">debug<sup>1</sup></a></li>
+		
+		</ul>
+</div>
+
+
+</aside>
+</div>
+    </div>
+    <footer><div id="footer" >
+	
+	<div class="line">
+		<span></span>
+		<div class="author"></div>
+	</div>
+	
+	
+	<section class="info">
+		<p> hello, i am ricky <br/>
+			This is my blog</p>
+	</section>
+	 
+	<div class="social-font" class="clearfix">
+		
+		<a href="http://weibo.com/offcourt" target="_blank" title="weibo"></a>
+		
+		
+		
+		<a href="https://github.com/rickyleeyz" target="_blank" title="github"></a>
+		
+		
+	</div>
+		<p class="copyright">Powered by <a href="http://hexo.io" target="_blank" title="hexo">hexo</a> and Theme by <a href="https://github.com/wizicer/iceman" target="_blank" title="Iceman">Iceman</a> © 2014 
+		
+		<a href="http://yoursite.com" target="_blank" title="Ricky Lee">Ricky Lee</a>
+		
+		</p>
+</div>
+</footer>
+    <script src="/js/jquery-2.1.0.min.js"></script>
+<script type="text/javascript">
+$(document).ready(function(){ 
+  $('.navbar').click(function(){
+    $('header nav').toggleClass('shownav');
+  });
+  var myWidth = 0;
+  function getSize(){
+    if( typeof( window.innerWidth ) == 'number' ) {
+      myWidth = window.innerWidth;
+    } else if( document.documentElement && document.documentElement.clientWidth) {
+      myWidth = document.documentElement.clientWidth;
+    };
+  };
+  var m = $('#main'),
+      a = $('#asidepart'),
+      c = $('.closeaside'),
+      o = $('.openaside');
+  $(window).resize(function(){
+    getSize(); 
+    if (myWidth >= 1024) {
+      $('header nav').removeClass('shownav');
+    }else
+    {
+      m.removeClass('moveMain');
+      a.css('display', 'block').removeClass('fadeOut');
+      o.css('display', 'none');
+      
+      $('#toc.toc-aside').css('display', 'none');
+        
+    }
+  });
+  c.click(function(){
+    a.addClass('fadeOut').css('display', 'none');
+    o.css('display', 'block').addClass('fadeIn');
+    m.addClass('moveMain');
+  });
+  o.click(function(){
+    o.css('display', 'none').removeClass('beforeFadeIn');
+    a.css('display', 'block').removeClass('fadeOut').addClass('fadeIn');      
+    m.removeClass('moveMain');
+  });
+  $(window).scroll(function(){
+    o.css("top",Math.max(80,260-$(this).scrollTop()));
+  });
+});
+</script>
+
+<script type="text/javascript">
+$(document).ready(function(){ 
+  var ai = $('.article-content>iframe'),
+      ae = $('.article-content>embed'),
+      t  = $('#toc'),
+      h  = $('article h2')
+      ah = $('article h2'),
+      ta = $('#toc.toc-aside'),
+      o  = $('.openaside'),
+      c  = $('.closeaside');
+  if(ai.length>0){
+    ai.wrap('<div class="video-container" />');
+  };
+  if(ae.length>0){
+   ae.wrap('<div class="video-container" />');
+  };
+  if(ah.length==0){
+    t.css('display','none');
+  }else{
+    c.click(function(){
+      ta.css('display', 'block').addClass('fadeIn');
+    });
+    o.click(function(){
+      ta.css('display', 'none');
+    });
+    $(window).scroll(function(){
+      ta.css("top",Math.max(140,320-$(this).scrollTop()));
+    });
+  };
+});
+</script>
+
+
+<script type="text/javascript">
+$(document).ready(function(){ 
+  var $this = $('.share'),
+      url = $this.attr('data-url'),
+      encodedUrl = encodeURIComponent(url),
+      title = $this.attr('data-title'),
+      tsina = $this.attr('data-tsina');
+  var html = [
+  '<a href="#" class="overlay" id="qrcode"></a>',
+  '<div class="qrcode clearfix"><span>扫描二维码分享到微信朋友圈</span><a class="qrclose" href="#share"></a><strong>Loading...Please wait</strong><img id="qrcode-pic" data-src="http://s.jiathis.com/qrcode.php?url=' + encodedUrl + '"/></div>',
+  '<a href="#textlogo" class="article-back-to-top" title="Top"></a>',
+  '<a href="https://www.facebook.com/sharer.php?u=' + encodedUrl + '" class="article-share-facebook" target="_blank" title="Facebook"></a>',
+  '<a href="#qrcode" class="article-share-qrcode" title="QRcode"></a>',
+  '<a href="https://twitter.com/intent/tweet?url=' + encodedUrl + '" class="article-share-twitter" target="_blank" title="Twitter"></a>',
+  '<a href="http://service.weibo.com/share/share.php?title='+title+'&url='+encodedUrl +'&ralateUid='+ tsina +'&searchPic=true&style=number' +'" class="article-share-weibo" target="_blank" title="Weibo"></a>',
+  '<span title="Share to"></span>'
+  ].join('');
+  $this.append(html);
+  $('.article-share-qrcode').click(function(){
+    var imgSrc = $('#qrcode-pic').attr('data-src');
+    $('#qrcode-pic').attr('src', imgSrc);
+    $('#qrcode-pic').load(function(){
+        $('.qrcode strong').text(' ');
+    });
+  });
+});     
+</script>
+
+
+
+
+
+
+
+
+  </body>
+</html>
